@@ -1,0 +1,76 @@
+@import "tailwindcss";
+
+@theme {
+  --color-pista:        #7BAE7F;
+  --color-pista-dark:   #4F6F52;
+  --color-pista-light:  #A8C9A3;
+  --color-cream-bg:     #F7F5EF;
+  --color-cream-soft:   #E9E3D5;
+  --color-text-dark:    #263326;
+  --color-text-mid:     #4F6F52;
+  --color-text-muted:   #7A8C7A;
+}
+
+@layer base {
+  html {
+    scroll-behavior: smooth;
+  }
+  
+  body {
+    background-color: #F7F5EF;
+    color: #263326;
+    @apply antialiased;
+  }
+
+  * {
+    @apply transition-colors duration-200;
+  }
+
+  /* Custom Scrollbar */
+  ::-webkit-scrollbar {
+    width: 8px;
+    height: 8px;
+  }
+  ::-webkit-scrollbar-track {
+    background: transparent;
+  }
+  ::-webkit-scrollbar-thumb {
+    background: #A8C9A3;
+    border-radius: 10px;
+  }
+  ::-webkit-scrollbar-thumb:hover {
+    background: #7BAE7F;
+  }
+}
+
+@layer utilities {
+  .animate-float {
+    animation: float 6s ease-in-out infinite;
+  }
+
+  @keyframes float {
+    0%, 100% { transform: translateY(0px); }
+    50%       { transform: translateY(-14px); }
+  }
+
+  .animate-fade-up {
+    animation: fadeUp 0.7s ease forwards;
+  }
+
+  @keyframes fadeUp {
+    from { opacity: 0; transform: translateY(24px); }
+    to   { opacity: 1; transform: translateY(0); }
+  }
+
+  .bg-hero-gradient {
+    background: radial-gradient(ellipse 80% 60% at 60% 40%, rgba(123,174,127,0.18) 0%, transparent 70%),
+                radial-gradient(ellipse 60% 50% at 10% 80%, rgba(168,201,163,0.14) 0%, transparent 60%),
+                #F7F5EF;
+  }
+
+  .glass-card {
+    background: rgba(255,255,255,0.72);
+    backdrop-filter: blur(16px);
+    -webkit-backdrop-filter: blur(16px);
+  }
+}
