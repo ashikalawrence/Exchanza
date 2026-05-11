@@ -10,7 +10,7 @@ const CONDITIONS = ['Like New', 'Good', 'Fair', 'Poor'];
 const AddBookForm = () => {
   const { user } = useAuth();
   const [formData, setFormData] = useState({
-    title: '', author: '', category: 'Fiction', condition: 'Good', type: 'Exchange', description: ''
+    title: '', author: '', category: 'Fiction', condition: 'Good', type: 'Exchange', description: '', returnDueDate: ''
   });
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [imageBase64, setImageBase64] = useState(null);
@@ -25,11 +25,28 @@ const AddBookForm = () => {
   };
 
   const handleChange = (e) => setFormData({ ...formData, [e.target.name]: e.target.value });
+  const today = new Date().toISOString().split('T')[0];
 
   const handleSubmit = async (e) => {
     e.preventDefault();
+
+    if (formData.type === 'Exchange' && formData.returnDueDate) {
+      const selectedDate = new Date(formData.returnDueDate);
+      const todayDate = new Date();
+      todayDate.setHours(0, 0, 0, 0);
+
+      if (selectedDate < todayDate) {
+        window.dispatchEvent(new CustomEvent('showGlobalToast', {
+          detail: { title: 'Invalid Date', message: 'Return due date cannot be in the past.' }
+        }));
+        return;
+      }
+    }
+
     setIsSubmitting(true);
     try {
+      // Build base book document — omit returnDueDate entirely when not applicable
+      // (keeps backward compatibility with existing books that lack this field)
       const bookData = {
         title: formData.title,
         author: formData.author,
@@ -40,7 +57,11 @@ const AddBookForm = () => {
         description: formData.description,
         imageUrl: imageBase64,
         ownerId: user ? user.uid : 'anonymous',
-        createdAt: serverTimestamp()
+        createdAt: serverTimestamp(),
+        // Only include returnDueDate for Exchange listings with an actual date value
+        ...(formData.type === 'Exchange' && formData.returnDueDate
+          ? { returnDueDate: formData.returnDueDate }
+          : {}),
       };
 
       await addDoc(collection(db, 'books'), bookData);
@@ -50,7 +71,7 @@ const AddBookForm = () => {
         detail: { title: 'Book Added!', message: `Successfully listed "${formData.title}".` }
       }));
 
-      setFormData({ title: '', author: '', category: 'Fiction', condition: 'Good', type: 'Exchange', description: '' });
+      setFormData({ title: '', author: '', category: 'Fiction', condition: 'Good', type: 'Exchange', description: '', returnDueDate: '' });
       setImageBase64(null);
     } catch (error) {
       console.error('Error adding book:', error);
@@ -125,6 +146,21 @@ const AddBookForm = () => {
               ))}
             </div>
           </div>
+
+          {/* Return Due Date - Only for Exchange */}
+          {formData.type === 'Exchange' && (
+            <div className="md:col-span-2">
+              <label className={labelClass}>Return Due Date <span className="font-light text-[#7A8C7A]">(Optional)</span></label>
+              <input 
+                type="date" 
+                name="returnDueDate" 
+                value={formData.returnDueDate} 
+                onChange={handleChange}
+                min={today}
+                className={inputClass} 
+              />
+            </div>
+          )}
 
           {/* Description */}
           <div className="md:col-span-2">

@@ -9,16 +9,6 @@ import {
 } from 'firebase/firestore';
 import { db } from '../firebase/config';
 
-const SEED_CIRCLES = [
-  { name: 'Self-Help & Growth', emoji: '🌱', category: 'Self-Help', description: 'A circle for readers who believe in constant self-improvement through books on habits, productivity, and mindset.', popularBooks: ['Atomic Habits', 'Deep Work', 'The Power of Now'], discussions: [{ user: 'Priya S.', text: 'Atomic Habits completely changed my morning routine!', time: '2h ago' }, { user: 'Arjun M.', text: 'Has anyone tried the 5-second rule from Mel Robbins?', time: '4h ago' }], trending: 'Atomic Habits', color: '#7BAE7F', activity: 'Very Active' },
-  { name: 'Fiction Club', emoji: '📖', category: 'Fiction', description: 'Escape into worlds of imagination. We discuss novels, short stories, and literary fiction from around the globe.', popularBooks: ['The Alchemist', 'The Midnight Library', 'The Great Gatsby'], discussions: [{ user: 'Deepika R.', text: 'The Midnight Library made me cry. Highly recommend!', time: '1h ago' }, { user: 'Kiran N.', text: 'Anyone have a copy of Dune to exchange?', time: '3h ago' }], trending: 'The Midnight Library', color: '#4F6F52', activity: 'Active' },
-  { name: 'AI & Tech Readers', emoji: '🤖', category: 'Technology', description: 'For curious minds exploring artificial intelligence, machine learning, and the future of technology through books.', popularBooks: ['Life 3.0', 'The Alignment Problem', 'Zero to One'], discussions: [{ user: 'Arjun M.', text: "Life 3.0 is the best intro to AI ethics I've read.", time: '30m ago' }], trending: 'Life 3.0', color: '#263326', activity: 'Growing' },
-  { name: 'Startup & Finance', emoji: '📈', category: 'Non-Fiction', description: 'Building businesses, understanding money, and learning from the greatest entrepreneurs and investors.', popularBooks: ['Zero to One', 'Rich Dad Poor Dad', 'The Lean Startup'], discussions: [{ user: 'Kiran N.', text: 'Zero to One changed my entire view on competition.', time: '5h ago' }], trending: 'Zero to One', color: '#6B9080', activity: 'Active' },
-  { name: 'Philosophy Corner', emoji: '🧠', category: 'Philosophy', description: 'Deep dives into existentialism, stoicism, and the great philosophical questions that define our humanity.', popularBooks: ["Man's Search for Meaning", 'Meditations', 'Sapiens'], discussions: [{ user: 'Priya S.', text: 'Meditations by Marcus Aurelius is timeless wisdom.', time: '3h ago' }], trending: 'Meditations', color: '#A8C9A3', activity: 'Steady' },
-  { name: 'Science Fiction Hub', emoji: '🚀', category: 'Science Fiction', description: 'Exploring the cosmos, alternate realities, and futures yet imagined. From classic Asimov to modern Weir.', popularBooks: ['Dune', 'Project Hail Mary', 'Foundation'], discussions: [{ user: 'Meera I.', text: 'Project Hail Mary is the best sci-fi of the decade!', time: '1h ago' }], trending: 'Project Hail Mary', color: '#E2A98B', activity: 'Very Active' },
-];
-
-const CATEGORIES = ['All', 'Self-Help', 'Fiction', 'Technology', 'Non-Fiction', 'Philosophy', 'Science Fiction'];
 const ACTIVITY_COLORS = { 'Very Active': '#7BAE7F', 'Active': '#4F6F52', 'Growing': '#A8C9A3', 'Steady': '#6B9080' };
 
 const ActivityBadge = ({ label }) => (
@@ -85,31 +75,16 @@ const BookCircles = () => {
 
   const showToast = (msg) => { setToast(msg); setTimeout(() => setToast(null), 3500); };
 
-  // Seed default circles if collection is empty
-  const seedCircles = async () => {
-    const snap = await getDocs(collection(db, 'bookCircles'));
-    if (snap.empty) {
-      for (const c of SEED_CIRCLES) {
-        await addDoc(collection(db, 'bookCircles'), {
-          ...c,
-          joinedUsers: [],
-          membersCount: Math.floor(Math.random() * 120) + 30,
-          creatorId: 'system',
-          creatorName: 'Exchanza',
-          createdAt: serverTimestamp(),
-        });
-      }
-    }
-  };
-
   // Real-time listener
   useEffect(() => {
-    seedCircles();
     const q = query(collection(db, 'bookCircles'), orderBy('createdAt', 'desc'));
     const unsub = onSnapshot(q, (snap) => {
       setCircles(snap.docs.map(d => ({ id: d.id, ...d.data() })));
       setLoading(false);
-    }, () => setLoading(false));
+    }, (error) => {
+      console.error("Error fetching circles:", error);
+      setLoading(false);
+    });
     return () => unsub();
   }, []);
 
@@ -167,6 +142,7 @@ const BookCircles = () => {
     }
   };
 
+  const categories = ['All', ...new Set(circles.map(c => c.category))].filter(Boolean);
   const filtered = activeCategory === 'All' ? circles : circles.filter(c => c.category === activeCategory);
   const joinedCount = user ? circles.filter(c => isJoined(c)).length : 0;
   const inputClass = "w-full px-4 py-3 bg-[#F7F5EF] border border-[#E9E3D5] rounded-xl text-sm text-[#263326] focus:outline-none focus:ring-2 focus:ring-[#7BAE7F] transition-all";
@@ -204,9 +180,8 @@ const BookCircles = () => {
         </div>
       </div>
 
-      {/* Category Filter */}
       <div className="flex gap-2 flex-wrap mb-8">
-        {CATEGORIES.map(cat => (
+        {categories.map(cat => (
           <button key={cat} onClick={() => setActiveCategory(cat)}
             className={`px-4 py-2 rounded-xl text-sm font-semibold border transition-all ${activeCategory === cat ? 'bg-[#263326] text-white border-[#263326] shadow-sm' : 'bg-white text-[#7A8C7A] border-[#E9E3D5] hover:border-[#7BAE7F] hover:text-[#4F6F52]'}`}>
             {cat}
@@ -250,7 +225,7 @@ const BookCircles = () => {
               <div>
                 <label className="block text-sm font-bold text-[#4F6F52] mb-1.5">Category</label>
                 <select value={newCircle.category} onChange={e => setNewCircle({ ...newCircle, category: e.target.value })} className={inputClass}>
-                  {CATEGORIES.filter(c => c !== 'All').map(c => <option key={c} value={c}>{c}</option>)}
+                  {['Fiction', 'Non-Fiction', 'Self-Help', 'Technology', 'Philosophy', 'Science Fiction', 'Biography', 'History'].map(c => <option key={c} value={c}>{c}</option>)}
                 </select>
               </div>
               <div>

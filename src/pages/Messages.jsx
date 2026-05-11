@@ -22,10 +22,19 @@ const Messages = () => {
     const q = query(collection(db, 'chats'), where('participants', 'array-contains', user.uid));
     
     const unsubscribe = onSnapshot(q, (snapshot) => {
-      const chatsData = snapshot.docs.map(doc => ({
-        id: doc.id,
-        ...doc.data()
-      }));
+      const chatsData = snapshot.docs
+        .map(doc => ({
+          id: doc.id,
+          ...doc.data()
+        }))
+        .filter(chat => {
+          // Filter out chats with no messages yet (ghost chats)
+          // and self-chats where both participants are the same user
+          const hasMessages = !!chat.lastMessage;
+          const otherParticipant = chat.participants.find(id => id !== user.uid);
+          return hasMessages && otherParticipant;
+        });
+      
       // Sort by updatedAt descending
       chatsData.sort((a, b) => {
         const dateA = a.updatedAt?.toMillis ? a.updatedAt.toMillis() : 0;

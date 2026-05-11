@@ -29,12 +29,6 @@ const Avatar = ({ name, color, size = 8 }) => (
   </div>
 );
 
-const MOCK_BOOKS = [
-  { title: 'Atomic Habits', author: 'James Clear', color: '#7BAE7F' },
-  { title: 'Deep Work', author: 'Cal Newport', color: '#4F6F52' },
-  { title: 'The Alchemist', author: 'Paulo Coelho', color: '#A8C9A3' },
-  { title: 'Dune', author: 'Frank Herbert', color: '#263326' },
-];
 
 const CirclePage = () => {
   const { circleId } = useParams();
@@ -54,11 +48,8 @@ const CirclePage = () => {
   const [newPost, setNewPost] = useState('');
   const [posting, setPosting] = useState(false);
 
-  // Chat state (local)
-  const [chatMessages, setChatMessages] = useState([
-    { id: 1, name: 'Priya S.', text: 'Welcome everyone! 👋', color: '#7BAE7F', time: '10m ago' },
-    { id: 2, name: 'Arjun M.', text: 'Excited to be here!', color: '#4F6F52', time: '8m ago' },
-  ]);
+  // Chat is local per-session (UI only, not persisted)
+  const [chatMessages, setChatMessages] = useState([]);
   const [chatInput, setChatInput] = useState('');
 
   const showToast = (msg) => { setToast(msg); setTimeout(() => setToast(null), 3000); };
@@ -309,22 +300,28 @@ const CirclePage = () => {
               <span className="ml-auto px-3 py-1 bg-[#7BAE7F]/30 text-[#A8C9A3] text-xs font-bold rounded-full border border-[#7BAE7F]/20 flex items-center gap-1"><Sparkles size={10} /> Hot</span>
             </div>
           )}
-          <h3 className="font-bold text-[#263326]">Popular in This Circle</h3>
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-            {[...(circle.popularBooks || []).map((b, i) => ({ title: b, author: '', color: MOCK_BOOKS[i % MOCK_BOOKS.length]?.color || '#7BAE7F' })),
-              ...MOCK_BOOKS.filter(b => !(circle.popularBooks || []).includes(b.title))].slice(0, 4).map((book, i) => (
-              <div key={i} className="bg-white rounded-2xl p-4 border border-[#E9E3D5] shadow-sm hover:shadow-md hover:-translate-y-0.5 transition-all flex items-center gap-4">
-                <div className="w-12 h-16 rounded-xl flex items-center justify-center text-white font-bold text-lg shadow-md flex-shrink-0" style={{ background: `linear-gradient(135deg, ${book.color}cc, ${book.color})` }}>
-                  {book.title.charAt(0)}
+        <h3 className="font-bold text-[#263326]">Popular in This Circle</h3>
+          {(circle.popularBooks || []).length === 0 ? (
+            <div className="text-center py-12 text-[#7A8C7A] bg-white rounded-2xl border border-[#E9E3D5]">
+              <BookOpen size={36} className="mx-auto mb-3 opacity-30" />
+              <p className="font-light text-sm">No books added to this circle yet.</p>
+              <p className="text-xs font-light mt-1">Members can recommend books in the Discussions tab.</p>
+            </div>
+          ) : (
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+              {(circle.popularBooks || []).slice(0, 4).map((title, i) => (
+                <div key={i} className="bg-white rounded-2xl p-4 border border-[#E9E3D5] shadow-sm hover:shadow-md hover:-translate-y-0.5 transition-all flex items-center gap-4">
+                  <div className="w-12 h-16 rounded-xl flex items-center justify-center text-white font-bold text-lg shadow-md flex-shrink-0" style={{ background: 'linear-gradient(135deg, #7BAE7Fcc, #4F6F52)' }}>
+                    {title.charAt(0)}
+                  </div>
+                  <div>
+                    <p className="font-bold text-sm text-[#263326] leading-tight">{title}</p>
+                    <span className="inline-block mt-2 px-2 py-0.5 bg-[#7BAE7F]/10 text-[#4F6F52] border border-[#7BAE7F]/20 text-[10px] font-bold rounded-lg">{circle.category}</span>
+                  </div>
                 </div>
-                <div>
-                  <p className="font-bold text-sm text-[#263326] leading-tight">{book.title}</p>
-                  {book.author && <p className="text-xs text-[#7A8C7A] font-light mt-0.5">{book.author}</p>}
-                  <span className="inline-block mt-2 px-2 py-0.5 bg-[#7BAE7F]/10 text-[#4F6F52] border border-[#7BAE7F]/20 text-[10px] font-bold rounded-lg">{circle.category}</span>
-                </div>
-              </div>
-            ))}
-          </div>
+              ))}
+            </div>
+          )}
         </div>
       )}
 

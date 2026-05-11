@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { Heart, User, BookOpen } from 'lucide-react';
+import { Heart, User, BookOpen, Calendar, AlertCircle } from 'lucide-react';
 import { useAuth } from '../../context/AuthContext';
 import { collection, addDoc, query, where, getDocs, serverTimestamp, setDoc, doc } from 'firebase/firestore';
 import { db } from '../../firebase/config';
@@ -87,6 +87,13 @@ const BookCard = ({ book, isOwnerView, onEdit, onDelete }) => {
       }));
       return;
     }
+
+    if (user.uid === book.ownerId) {
+      window.dispatchEvent(new CustomEvent('showGlobalToast', {
+        detail: { title: 'Invalid Request', message: 'You cannot request your own book.' }
+      }));
+      return;
+    }
     
     setIsRequesting(true);
     try {
@@ -166,6 +173,8 @@ const BookCard = ({ book, isOwnerView, onEdit, onDelete }) => {
   };
 
   const isExchange = (book.type || '') === 'Exchange';
+  const isOverdue = book.returnDueDate && new Date(book.returnDueDate).getTime() < new Date().setHours(0, 0, 0, 0);
+  const isOwner = user && book.ownerId === user.uid;
 
   return (
     <div className="bg-white rounded-3xl overflow-hidden border border-[#E9E3D5] shadow-sm hover:shadow-[0_8px_32px_rgba(79,111,82,0.12)] hover:-translate-y-1.5 transition-all duration-300 group flex flex-col h-full">
@@ -221,6 +230,19 @@ const BookCard = ({ book, isOwnerView, onEdit, onDelete }) => {
           <User size={12} /> {book.author}
         </p>
 
+        {book.returnDueDate && (
+          <div className={`flex items-center gap-2 mb-4 text-[11px] font-semibold px-3 py-2 rounded-xl border transition-colors ${
+            isOverdue 
+              ? 'bg-red-50 text-red-600 border-red-200 shadow-sm animate-pulse' 
+              : 'bg-[#7BAE7F]/10 text-[#4F6F52] border-[#7BAE7F]/20'
+          }`}>
+            {isOverdue ? <AlertCircle size={13} /> : <Calendar size={13} className="text-[#7BAE7F]" />}
+            <span className="tracking-tight">
+              {isOverdue ? 'Overdue' : 'Return by'}: {new Date(book.returnDueDate).toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' })}
+            </span>
+          </div>
+        )}
+
         <div className="flex items-center justify-between mt-auto pt-4 border-t border-[#E9E3D5]">
           <span className="text-[11px] font-medium text-[#7A8C7A] bg-[#F7F5EF] px-2.5 py-1.5 rounded-lg border border-[#E9E3D5]">
             {book.category}
@@ -250,6 +272,10 @@ const BookCard = ({ book, isOwnerView, onEdit, onDelete }) => {
             >
               Delete
             </button>
+          </div>
+        ) : isOwner ? (
+          <div className="mt-4 py-2.5 rounded-xl text-sm font-semibold bg-[#F7F5EF] text-[#7A8C7A] border border-[#E9E3D5] flex items-center justify-center gap-2 cursor-default">
+            <User size={14} /> Your Listing
           </div>
         ) : (
           <button

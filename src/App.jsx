@@ -1,6 +1,6 @@
-import React, { useEffect } from 'react';
+import React from 'react';
 import { BrowserRouter as Router, Routes, Route, Navigate } from 'react-router-dom';
-import { AuthProvider } from './context/AuthContext';
+import { AuthProvider, useAuth } from './context/AuthContext';
 import Layout from './components/Layout/Layout';
 import Dashboard from './pages/Dashboard';
 import Login from './pages/Login';
@@ -16,16 +16,30 @@ import AddBookForm from './components/Dashboard/AddBookForm';
 import BookCircles from './pages/BookCircles';
 import CirclePage from './pages/CirclePage';
 import ProtectedRoute from './components/Layout/ProtectedRoute';
+import AdminRoute from './components/Layout/AdminRoute';
+import AdminPanel from './pages/AdminPanel';
+import BannedPage from './pages/BannedPage';
+
+// Wrapper: redirect banned users to /banned on every page
+const BanGuard = ({ children }) => {
+  const { isBanned } = useAuth();
+  if (isBanned) return <Navigate to="/banned" replace />;
+  return children;
+};
 
 function App() {
-  // Removed Dark Mode logic
   return (
     <AuthProvider>
       <Router>
         <Routes>
           <Route path="/login" element={<Login />} />
           <Route path="/signup" element={<Signup />} />
-          <Route path="/" element={<Layout />}>
+          <Route path="/banned" element={<BannedPage />} />
+
+          {/* Admin — completely separate layout */}
+          <Route path="/admin" element={<AdminRoute><AdminPanel /></AdminRoute>} />
+
+          <Route path="/" element={<BanGuard><Layout /></BanGuard>}>
             <Route index element={<Dashboard />} />
             <Route path="explore" element={<Explore />} />
             {/* Protected Routes */}
@@ -38,8 +52,6 @@ function App() {
             <Route path="settings" element={<ProtectedRoute><Settings /></ProtectedRoute>} />
             <Route path="circles" element={<ProtectedRoute><BookCircles /></ProtectedRoute>} />
             <Route path="circles/:circleId" element={<ProtectedRoute><CirclePage /></ProtectedRoute>} />
-
-            {/* Catch all to redirect to home */}
             <Route path="*" element={<Navigate to="/" replace />} />
           </Route>
         </Routes>
@@ -49,3 +61,4 @@ function App() {
 }
 
 export default App;
+

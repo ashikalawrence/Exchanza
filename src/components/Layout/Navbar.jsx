@@ -7,7 +7,7 @@ import { collection, query, where, onSnapshot } from 'firebase/firestore';
 import { db } from '../../firebase/config';
 
 const Navbar = () => {
-  const { user, logout } = useAuth();
+  const { user, logout, isAdmin } = useAuth();
   const navigate = useNavigate();
   const [isProfileOpen, setIsProfileOpen] = useState(false);
   const [scrolled, setScrolled] = useState(false);
@@ -22,7 +22,9 @@ const Navbar = () => {
     }
     const q = query(collection(db, 'messages'), where('receiverId', '==', user.uid), where('read', '==', false));
     const unsubscribe = onSnapshot(q, (snapshot) => {
-      setUnreadCount(snapshot.size);
+      // Defensive check: only count messages where sender is NOT the current user
+      const actualUnread = snapshot.docs.filter(doc => doc.data().senderId !== user.uid).length;
+      setUnreadCount(actualUnread);
     });
     return () => unsubscribe();
   }, [user]);
@@ -102,6 +104,14 @@ const Navbar = () => {
             {link.name}
           </NavLink>
         ))}
+        {user && isAdmin && (
+          <NavLink
+            to="/admin"
+            className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-sm font-bold text-[#4F6F52] bg-[#7BAE7F]/10 hover:bg-[#7BAE7F]/20 hover:text-[#263326] transition-all duration-300 shadow-[0_0_10px_rgba(123,174,127,0.15)] hover:shadow-[0_0_15px_rgba(123,174,127,0.25)] border border-[#7BAE7F]/20"
+          >
+            <span className="text-base leading-none relative -top-[1px]">👑</span> Admin Panel
+          </NavLink>
+        )}
       </nav>
 
       {/* Right: auth */}
@@ -208,6 +218,15 @@ const Navbar = () => {
                 {link.name}
               </NavLink>
             ))}
+            {user && isAdmin && (
+              <NavLink
+                to="/admin"
+                onClick={() => setIsMobileMenuOpen(false)}
+                className="flex items-center gap-2 px-4 py-3 rounded-xl font-bold text-sm text-[#4F6F52] bg-[#7BAE7F]/10 hover:bg-[#7BAE7F]/20 transition-colors border border-[#7BAE7F]/20"
+              >
+                <span className="text-base">👑</span> Admin Panel
+              </NavLink>
+            )}
             {user && (
               <>
                 <div className="h-px bg-[#E9E3D5] my-2" />

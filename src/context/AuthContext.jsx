@@ -24,80 +24,94 @@ const AuthContext = createContext();
 export const useAuth = () => useContext(AuthContext);
 
 export const AuthProvider = ({ children }) => {
-
   const [user, setUser] = useState(null);
-
+  const [userProfile, setUserProfile] = useState(null);
+  const [isAdmin, setIsAdmin] = useState(false);
+  const [isBanned, setIsBanned] = useState(false);
   const [loading, setLoading] = useState(true);
 
   // SIGNUP
   const signup = async (email, password, fullName) => {
     const userCredential = await createUserWithEmailAndPassword(auth, email, password);
     if (fullName) {
-      await updateProfile(userCredential.user, {
-        displayName: fullName
+      await updateProfile(userCredential.user, { displayName: fullName });
+      await setDoc(doc(db, 'users', userCredential.user.uid), {
+        uid: userCredential.user.uid,
+        displayName: fullName,
+        email: email,
+        createdAt: new Date().toISOString(),
+        role: 'user',
+        banned: false
       });
-      // Force update the local user state so it reflects immediately
       setUser({ ...userCredential.user, displayName: fullName });
     }
     return userCredential;
   };
 
   // LOGIN
-  const login = (email, password) => {
-    return signInWithEmailAndPassword(
-      auth,
-      email,
-      password
-    );
-  };
+  const login = (email, password) => signInWithEmailAndPassword(auth, email, password);
 
   // LOGOUT
-  const logout = () => {
-    return signOut(auth);
-  };
+  const logout = () => signOut(auth);
 
   // GOOGLE LOGIN
   const loginWithGoogle = async () => {
     const provider = new GoogleAuthProvider();
     const result = await signInWithPopup(auth, provider);
-    const user = result.user;
-
-    // Check if user exists in Firestore
-    const userRef = doc(db, 'users', user.uid);
+    const u = result.user;
+    const userRef = doc(db, 'users', u.uid);
     const userSnap = await getDoc(userRef);
-
     if (!userSnap.exists()) {
-      // Create user document if it doesn't exist
       await setDoc(userRef, {
-        uid: user.uid,
-        displayName: user.displayName,
-        email: user.email,
-        photoURL: user.photoURL,
-        createdAt: new Date().toISOString()
+        uid: u.uid,
+        displayName: u.displayName,
+        email: u.email,
+        photoURL: u.photoURL,
+        createdAt: new Date().toISOString(),
+        role: 'user',
+        banned: false
       });
     }
-
     return result;
   };
 
   useEffect(() => {
-
-    const unsubscribe = onAuthStateChanged(
-      auth,
-      (currentUser) => {
-
+    const unsubscribe = onAuthStateChanged(auth, async (currentUser) => {
+      if (currentUser) {
         setUser(currentUser);
-
-        setLoading(false);
+        try {
+          const snap = await getDoc(doc(db, 'users', currentUser.uid));
+          if (snap.exists()) {
+            const profile = snap.data();
+            setUserProfile(profile);
+            setIsAdmin(profile.role === 'admin');
+            setIsBanned(profile.banned === true);
+          } else {
+            setUserProfile(null);
+            setIsAdmin(false);
+            setIsBanned(false);
+          }
+        } catch (err) {
+          console.error('Profile fetch error:', err);
+          setIsAdmin(false);
+          setIsBanned(false);
+        }
+      } else {
+        setUser(null);
+        setUserProfile(null);
+        setIsAdmin(false);
+        setIsBanned(false);
       }
-    );
-
+      setLoading(false);
+    });
     return unsubscribe;
-
   }, []);
 
   const value = {
     user,
+    userProfile,
+    isAdmin,
+    isBanned,
     signup,
     login,
     logout,
@@ -107,9 +121,7 @@ export const AuthProvider = ({ children }) => {
 
   return (
     <AuthContext.Provider value={value}>
-
       {!loading && children}
-
     </AuthContext.Provider>
   );
 };

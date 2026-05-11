@@ -3,9 +3,9 @@ import { useAuth } from '../context/AuthContext';
 import { useNavigate } from 'react-router-dom';
 import { 
   User, Bell, Save, LogOut, CheckCircle2, ArrowLeft, 
-  Camera, Shield, UserCircle, Mail, Key, Calendar, BookOpen, Activity, Heart, ShieldCheck, Settings as SettingsIcon
+  Camera, Shield, UserCircle, Mail, Key, Calendar, BookOpen, Activity, Heart, ShieldCheck, Settings as SettingsIcon, Flag, X, Loader2
 } from 'lucide-react';
-import { collection, query, where, getCountFromServer, doc, getDoc, setDoc } from 'firebase/firestore';
+import { collection, query, where, getCountFromServer, doc, getDoc, setDoc, addDoc, serverTimestamp } from 'firebase/firestore';
 import { updateProfile } from 'firebase/auth';
 import { auth, db } from '../firebase/config';
 
@@ -25,6 +25,40 @@ const Settings = () => {
   const [saving, setSaving] = useState(false);
   const [showToast, setShowToast] = useState(false);
   const [toastMessage, setToastMessage] = useState('');
+
+  // Report Issue Modal
+  const [showReportModal, setShowReportModal] = useState(false);
+  const [reportForm, setReportForm] = useState({ title: '', description: '', screenshotUrl: '' });
+  const [submittingReport, setSubmittingReport] = useState(false);
+
+  const handleReportSubmit = async () => {
+    if (!reportForm.title.trim() || !reportForm.description.trim()) return;
+    setSubmittingReport(true);
+    try {
+      await addDoc(collection(db, 'reports'), {
+        userId: user.uid,
+        userName: user.displayName || 'Anonymous',
+        userEmail: user.email || '',
+        title: reportForm.title.trim(),
+        description: reportForm.description.trim(),
+        screenshotUrl: reportForm.screenshotUrl.trim() || null,
+        status: 'open',
+        createdAt: serverTimestamp(),
+      });
+      setShowReportModal(false);
+      setReportForm({ title: '', description: '', screenshotUrl: '' });
+      setToastMessage('Issue reported successfully. Our team will review it shortly.');
+      setShowToast(true);
+      setTimeout(() => setShowToast(false), 4000);
+    } catch (e) {
+      console.error('Error submitting report:', e);
+      setToastMessage('Failed to submit report. Please try again.');
+      setShowToast(true);
+      setTimeout(() => setShowToast(false), 4000);
+    } finally {
+      setSubmittingReport(false);
+    }
+  };
 
   // Stats
   const [stats, setStats] = useState({ shared: 0, exchanges: 0, wishlist: 0 });
@@ -231,7 +265,13 @@ const Settings = () => {
               {tab.icon} {tab.label}
             </button>
           ))}
-          <div className="pt-2 mt-2 border-t border-[#E9E3D5]">
+          <div className="pt-2 mt-2 border-t border-[#E9E3D5] space-y-1">
+            <button
+              onClick={() => setShowReportModal(true)}
+              className="w-full flex items-center gap-3 px-4 py-3 rounded-xl text-sm font-medium text-[#7A8C7A] hover:bg-orange-50 hover:text-orange-600 transition-all"
+            >
+              <Flag size={18} className="text-orange-400" /> Report an Issue
+            </button>
             <button
               onClick={handleLogout}
               className="w-full flex items-center gap-3 px-4 py-3 rounded-xl text-sm font-medium text-red-500 hover:bg-red-50 transition-all"
@@ -443,6 +483,74 @@ const Settings = () => {
           <div>
             <p className="font-semibold text-sm">{toastMessage}</p>
             <p className="text-xs text-[#A8C9A3] font-light mt-0.5">Your changes are now live.</p>
+          </div>
+        </div>
+      )}
+
+      {/* Report Issue Modal */}
+      {showReportModal && (
+        <div className="fixed inset-0 bg-black/40 backdrop-blur-sm flex items-center justify-center z-[100] p-4">
+          <div className="bg-white rounded-3xl shadow-2xl w-full max-w-lg border border-[#E9E3D5] animate-in zoom-in-95 duration-200 overflow-hidden">
+            <div className="px-6 pt-6 pb-4 border-b border-[#E9E3D5] flex items-center justify-between">
+              <div>
+                <h2 className="font-bold text-[#263326] text-lg flex items-center gap-2">
+                  <Flag size={18} className="text-orange-400" /> Report an Issue
+                </h2>
+                <p className="text-xs text-[#7A8C7A] font-light mt-0.5">Help us improve Exchanza by reporting bugs or problems.</p>
+              </div>
+              <button onClick={() => setShowReportModal(false)} className="p-2 text-[#7A8C7A] hover:text-[#263326] hover:bg-[#F7F5EF] rounded-full transition-colors">
+                <X size={20} />
+              </button>
+            </div>
+            <div className="p-6 space-y-4">
+              <div>
+                <label className={labelClass}>Issue Title <span className="text-red-400">*</span></label>
+                <input
+                  type="text"
+                  value={reportForm.title}
+                  onChange={e => setReportForm({ ...reportForm, title: e.target.value })}
+                  placeholder="e.g. Exchange button not working"
+                  className={inputClass}
+                  maxLength={100}
+                />
+              </div>
+              <div>
+                <label className={labelClass}>Description <span className="text-red-400">*</span></label>
+                <textarea
+                  rows={4}
+                  value={reportForm.description}
+                  onChange={e => setReportForm({ ...reportForm, description: e.target.value })}
+                  placeholder="Describe the issue in detail — what happened, what you expected, and steps to reproduce..."
+                  className={`${inputClass} resize-none`}
+                  maxLength={1000}
+                />
+              </div>
+              <div>
+                <label className={labelClass}>Screenshot URL <span className="text-[#7A8C7A] font-normal">(Optional)</span></label>
+                <input
+                  type="url"
+                  value={reportForm.screenshotUrl}
+                  onChange={e => setReportForm({ ...reportForm, screenshotUrl: e.target.value })}
+                  placeholder="https://imgur.com/your-screenshot"
+                  className={inputClass}
+                />
+              </div>
+              <div className="flex gap-3 pt-2">
+                <button
+                  onClick={() => setShowReportModal(false)}
+                  className="flex-1 py-3 bg-[#F7F5EF] hover:bg-[#E9E3D5] text-[#4F6F52] font-semibold rounded-xl transition-all"
+                >
+                  Cancel
+                </button>
+                <button
+                  onClick={handleReportSubmit}
+                  disabled={!reportForm.title.trim() || !reportForm.description.trim() || submittingReport}
+                  className="flex-1 py-3 bg-[#7BAE7F] hover:bg-[#4F6F52] text-white font-semibold rounded-xl shadow-sm transition-all disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2 active:scale-95"
+                >
+                  {submittingReport ? <><Loader2 size={16} className="animate-spin" /> Submitting…</> : <><Flag size={16} /> Submit Report</>}
+                </button>
+              </div>
+            </div>
           </div>
         </div>
       )}

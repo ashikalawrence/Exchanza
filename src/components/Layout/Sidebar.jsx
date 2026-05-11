@@ -1,10 +1,10 @@
 import React from 'react';
 import { NavLink, useNavigate } from 'react-router-dom';
-import { BookOpen, LayoutDashboard, Compass, Heart, Settings, LogOut, PlusCircle, Library, Users } from 'lucide-react';
+import { BookOpen, LayoutDashboard, Compass, Heart, Settings, LogOut, PlusCircle, Library, Users, Shield } from 'lucide-react';
 import { useAuth } from '../../context/AuthContext';
 
 const Sidebar = ({ isOpen, setIsOpen }) => {
-  const { logout } = useAuth();
+  const { logout, isAdmin } = useAuth();
   const navigate = useNavigate();
 
   const handleLogout = async () => {
@@ -81,6 +81,21 @@ const Sidebar = ({ isOpen, setIsOpen }) => {
               <Settings size={20} />
               Settings
             </NavLink>
+            {isAdmin && (
+              <NavLink
+                to="/admin"
+                className={({ isActive }) =>
+                  `flex items-center gap-3 px-3 py-2.5 rounded-lg font-medium transition-colors ${
+                    isActive
+                      ? 'bg-[#7BAE7F]/10 text-[#4F6F52]'
+                      : 'text-[#7BAE7F] hover:bg-[#7BAE7F]/10 hover:text-[#4F6F52]'
+                  }`
+                }
+              >
+                <Shield size={20} />
+                Admin Panel
+              </NavLink>
+            )}
             <button 
               onClick={handleLogout}
               className="flex w-full items-center gap-3 px-3 py-2.5 rounded-lg font-medium text-slate-600 dark:text-slate-400 hover:bg-red-50 dark:hover:bg-red-500/10 hover:text-red-600 dark:hover:text-red-400 transition-colors"
