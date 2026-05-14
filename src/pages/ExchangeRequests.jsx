@@ -2,7 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { useAuth } from '../context/AuthContext';
 import {
   collection, query, where, onSnapshot,
-  doc, updateDoc, serverTimestamp, addDoc
+  doc, updateDoc, serverTimestamp, addDoc, setDoc, getDoc
 } from 'firebase/firestore';
 import { db } from '../firebase/config';
 import {
@@ -140,7 +140,7 @@ const OutgoingCard = ({ req, onMessage }) => (
 // ── Main Page ─────────────────────────────────────────────────────────────────
 
 const ExchangeRequests = () => {
-  const { user } = useAuth();
+  const { user, userProfile } = useAuth();
   const navigate = useNavigate();
   const [activeTab, setActiveTab] = useState('incoming');
   const [incoming, setIncoming] = useState([]);
@@ -183,6 +183,7 @@ const ExchangeRequests = () => {
       await updateDoc(doc(db, 'exchangeRequests', req.id), {
         status: 'accepted', updatedAt: serverTimestamp()
       });
+
       // Notify requester
       await addDoc(collection(db, 'notifications'), {
         userId: req.requesterId,
@@ -192,17 +193,62 @@ const ExchangeRequests = () => {
         createdAt: serverTimestamp(),
         read: false,
       });
-      // Auto message in chat
+
+      // Build deterministic chat ID (same algorithm as BookCard)
       const ids = [user.uid, req.requesterId].sort();
       const chatId = `${ids[0]}_${ids[1]}`;
+      const acceptText = `✅ I've accepted your exchange request for "${req.bookTitle}"! Let's arrange the handover.`;
+
+      // Fetch latest requester details — use username first (Exchanza handle, not Firebase displayName)
+      let requesterName = req.requesterName || 'User';
+      let requesterPhoto = null;
+      try {
+        const reqSnap = await getDoc(doc(db, 'users', req.requesterId));
+        if (reqSnap.exists()) {
+          const reqData = reqSnap.data();
+          requesterName = reqData.username || reqData.fullName || reqData.displayName || requesterName;
+          requesterPhoto = reqData.photoURL || reqData.profileImage || null;
+        }
+      } catch (err) {
+        console.error('[Exchanza] Error fetching requester details:', err);
+      }
+
+      // Owner's Exchanza identity (use userProfile from Firestore, not Firebase Auth displayName)
+      const ownerDisplayName = userProfile?.username || userProfile?.fullName || user.displayName || 'User';
+      const ownerPhoto = userProfile?.photoURL || userProfile?.profileImage || user.photoURL || null;
+
+      // Upsert chat document so it exists and has a lastMessage (required by Messages filter)
+      await setDoc(doc(db, 'chats', chatId), {
+        participants: [user.uid, req.requesterId],
+        createdAt: serverTimestamp(),
+        updatedAt: serverTimestamp(),
+        lastMessage: acceptText,
+        lastMessageSenderId: user.uid,
+        bookTitle: req.bookTitle || '',
+        bookId: req.bookId || '',
+        participantDetails: {
+          [user.uid]: {
+            name: ownerDisplayName,
+            photo: ownerPhoto
+          },
+          [req.requesterId]: {
+            name: requesterName,
+            photo: requesterPhoto
+          }
+        }
+      }, { merge: true });
+
+      // Write the acceptance message with 'timestamp' field (matches Messages.jsx sort)
       await addDoc(collection(db, 'messages'), {
         chatId,
         senderId: user.uid,
         receiverId: req.requesterId,
-        text: `✅ I've accepted your exchange request for "${req.bookTitle}"! Let's arrange the handover.`,
-        createdAt: serverTimestamp(),
+        text: acceptText,
+        timestamp: serverTimestamp(),
         read: false,
       });
+
+      console.log('[Exchanza] Acceptance chat updated:', chatId);
       toast('Request Accepted', `You accepted the request for "${req.bookTitle}".`);
     } catch (e) {
       console.error(e);

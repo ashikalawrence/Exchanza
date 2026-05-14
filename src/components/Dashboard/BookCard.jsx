@@ -1,11 +1,11 @@
 import React, { useState, useEffect } from 'react';
 import { Heart, User, BookOpen, Calendar, AlertCircle } from 'lucide-react';
 import { useAuth } from '../../context/AuthContext';
-import { collection, addDoc, query, where, getDocs, serverTimestamp, setDoc, doc } from 'firebase/firestore';
+import { collection, addDoc, query, where, getDocs, serverTimestamp, setDoc, doc, getDoc, updateDoc } from 'firebase/firestore';
 import { db } from '../../firebase/config';
 
 const BookCard = ({ book, isOwnerView, onEdit, onDelete }) => {
-  const { user } = useAuth();
+  const { user, userProfile } = useAuth();
   const [isWishlisted, setIsWishlisted] = useState(false);
   const [isRequesting, setIsRequesting] = useState(false);
   const [isRequested, setIsRequested] = useState(false);
@@ -110,6 +110,14 @@ const BookCard = ({ book, isOwnerView, onEdit, onDelete }) => {
         return;
       }
 
+      // Use Exchanza username/fullName from userProfile, NOT Firebase Auth displayName
+      // Firebase Auth displayName = Google account name (e.g. "J.K. Rowling") — NOT the Exchanza username
+      const myDisplayName = userProfile?.username
+        || userProfile?.fullName
+        || user.displayName
+        || 'Unknown User';
+      const myPhoto = userProfile?.photoURL || userProfile?.profileImage || user.photoURL || null;
+
       const requestData = {
         requestId: Date.now().toString(),
         bookId: book.id,
@@ -117,7 +125,7 @@ const BookCard = ({ book, isOwnerView, onEdit, onDelete }) => {
         bookImage: book.imageUrl || '',
         ownerId: book.ownerId || 'anonymous',
         requesterId: user.uid,
-        requesterName: user.displayName || 'Unknown User',
+        requesterName: myDisplayName,
         requesterEmail: user.email || '',
         type: book.type || 'Exchange',
         status: 'pending',
@@ -126,20 +134,58 @@ const BookCard = ({ book, isOwnerView, onEdit, onDelete }) => {
 
       await addDoc(collection(db, 'exchangeRequests'), requestData);
       
-      // CREATE CHAT
+      // CREATE CHAT ROOM + SYSTEM STARTER MESSAGE
       if (book.ownerId && book.ownerId !== 'anonymous' && book.ownerId !== user.uid) {
-        // Sort IDs to create a unique chat ID
+        // Sort IDs to create a deterministic, unique chat ID
         const ids = [user.uid, book.ownerId].sort();
         const chatId = `${ids[0]}_${ids[1]}`;
-        
+
+        const systemText = `📚 Exchange request sent for "${book.title}". Chat to arrange the exchange!`;
+
+        // Fetch owner details from users collection — use username first, then fullName
+        let ownerName = 'User';
+        let ownerPhoto = null;
+        try {
+          const ownerSnap = await getDoc(doc(db, 'users', book.ownerId));
+          if (ownerSnap.exists()) {
+            const ownerData = ownerSnap.data();
+            // username is the Exchanza handle — always prefer it over Firebase displayName
+            ownerName = ownerData.username || ownerData.fullName || ownerData.displayName || 'User';
+            ownerPhoto = ownerData.photoURL || ownerData.profileImage || null;
+          }
+        } catch (err) {
+          console.error('[Exchanza] Error fetching owner details:', err);
+        }
+
+        // 1. Create/update the chat document WITH lastMessage so Messages filter passes
         await setDoc(doc(db, 'chats', chatId), {
           participants: [user.uid, book.ownerId],
+          createdAt: serverTimestamp(),
           updatedAt: serverTimestamp(),
+          lastMessage: systemText,
+          lastMessageSenderId: 'system',
+          unreadCount: { [book.ownerId]: 1, [user.uid]: 0 },
+          bookTitle: book.title || '',
+          bookId: book.id || '',
           participantDetails: {
-            [user.uid]: { name: user.displayName || 'Requester', photo: user.photoURL || null },
-            [book.ownerId]: { name: book.author || 'Owner', photo: null } // We don't have owner's exact profile, but this is a fallback
+            [user.uid]: { name: myDisplayName, photo: myPhoto },
+            [book.ownerId]: { name: ownerName, photo: ownerPhoto }
           }
         }, { merge: true });
+
+        // 2. Write the system starter message — uses real user UID as sender
+        //    so Firestore security rule (senderId == auth.uid) allows the write
+        await addDoc(collection(db, 'messages'), {
+          chatId,
+          senderId: user.uid,               // MUST be real user UID for security rules
+          receiverId: book.ownerId,          // Owner should see this message
+          text: systemText,
+          timestamp: serverTimestamp(),
+          read: false,
+          isSystemMessage: true              // UI flag: render as centered info chip
+        });
+
+        console.log('[Exchanza] Chat created:', chatId);
       }
 
       if (book.ownerId && book.ownerId !== 'anonymous') {

@@ -20,10 +20,18 @@ const Navbar = () => {
       setTimeout(() => setUnreadCount(0), 0);
       return;
     }
-    const q = query(collection(db, 'messages'), where('receiverId', '==', user.uid), where('read', '==', false));
+    const q = query(
+      collection(db, 'messages'),
+      where('receiverId', '==', user.uid),
+      where('read', '==', false)
+    );
     const unsubscribe = onSnapshot(q, (snapshot) => {
-      // Defensive check: only count messages where sender is NOT the current user
-      const actualUnread = snapshot.docs.filter(doc => doc.data().senderId !== user.uid).length;
+      // Only count real unread messages from other users (not system messages)
+      const actualUnread = snapshot.docs.filter(d => {
+        const data = d.data();
+        return data.senderId !== user.uid && !data.isSystemMessage;
+      }).length;
+      console.log('[Exchanza] Navbar unread badge count:', actualUnread);
       setUnreadCount(actualUnread);
     });
     return () => unsubscribe();

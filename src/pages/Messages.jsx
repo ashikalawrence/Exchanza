@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef } from 'react';
 import { useAuth } from '../context/AuthContext';
-import { collection, query, where, onSnapshot, addDoc, serverTimestamp, updateDoc, doc } from 'firebase/firestore';
+import { collection, query, where, onSnapshot, addDoc, serverTimestamp, updateDoc, doc, getDoc } from 'firebase/firestore';
 import { db } from '../firebase/config';
 import { Send, MessageSquare, User, CheckCircle2, ArrowLeft } from 'lucide-react';
 
@@ -14,6 +14,7 @@ const Messages = () => {
   const [messages, setMessages] = useState([]);
   const [newMessage, setNewMessage] = useState('');
   const [loadingChats, setLoadingChats] = useState(true);
+  const [userProfiles, setUserProfiles] = useState({});
   const messagesEndRef = useRef(null);
 
   // Fetch Chats
@@ -22,31 +23,90 @@ const Messages = () => {
     const q = query(collection(db, 'chats'), where('participants', 'array-contains', user.uid));
     
     const unsubscribe = onSnapshot(q, (snapshot) => {
+      console.log('[Exchanza] Chats snapshot received, count:', snapshot.docs.length);
       const chatsData = snapshot.docs
-        .map(doc => ({
-          id: doc.id,
-          ...doc.data()
-        }))
+        .map(d => ({ id: d.id, ...d.data() }))
         .filter(chat => {
-          // Filter out chats with no messages yet (ghost chats)
-          // and self-chats where both participants are the same user
-          const hasMessages = !!chat.lastMessage;
-          const otherParticipant = chat.participants.find(id => id !== user.uid);
-          return hasMessages && otherParticipant;
+          const parts = chat.participants;
+          // Must be an array with at least 2 entries
+          if (!Array.isArray(parts) || parts.length < 2) {
+            console.log('[Exchanza] Filtered (bad participants):', chat.id);
+            return false;
+          }
+          // Must have a different participant — catches self-chats
+          const otherParticipant = parts.find(id => id !== user.uid);
+          if (!otherParticipant) {
+            console.log('[Exchanza] Filtered (self-chat):', chat.id);
+            return false;
+          }
+          // Valid chat — show even if no messages yet (lastMessage may be absent for old data)
+          return true;
         });
       
-      // Sort by updatedAt descending
+      // Sort by updatedAt descending (chats with no updatedAt go to bottom)
       chatsData.sort((a, b) => {
         const dateA = a.updatedAt?.toMillis ? a.updatedAt.toMillis() : 0;
         const dateB = b.updatedAt?.toMillis ? b.updatedAt.toMillis() : 0;
         return dateB - dateA;
       });
+      console.log('[Exchanza] Valid chats after filter:', chatsData.length);
       setChats(chatsData);
       setLoadingChats(false);
     });
 
     return () => unsubscribe();
   }, [user]);
+
+  // Fetch User Profiles for participants
+  useEffect(() => {
+    if (!chats.length || !user) return;
+
+    const fetchProfiles = async () => {
+      const uniqueParticipantIds = [...new Set(chats.flatMap(c => c.participants))];
+      const missingIds = uniqueParticipantIds.filter(id => !userProfiles[id]);
+
+      if (missingIds.length === 0) return;
+
+      console.log('[Exchanza] Fetching missing user profiles:', missingIds);
+      console.log('[Exchanza] Current User ID:', user.uid);
+      const newProfiles = { ...userProfiles };
+      let changed = false;
+
+      for (const id of missingIds) {
+        try {
+          const userSnap = await getDoc(doc(db, 'users', id));
+          if (userSnap.exists()) {
+            const data = userSnap.data();
+            const profile = {
+              name: data.username || data.fullName || data.displayName || 'User',
+              username: data.username || '',
+              photo: data.photoURL || data.profileImage || null
+            };
+            newProfiles[id] = profile;
+            console.log(`[Exchanza] Fetched profile for ${id}:`, {
+              username: profile.username,
+              name: profile.name,
+              photoURL: profile.photo
+            });
+            changed = true;
+          } else {
+            // Fallback for users not in the collection
+            console.log(`[Exchanza] No user document found for ${id}, using fallback.`);
+            newProfiles[id] = { name: 'User', photo: null };
+            changed = true;
+          }
+        } catch (error) {
+          console.error(`Error fetching profile for ${id}:`, error);
+        }
+      }
+
+      if (changed) {
+        setUserProfiles(newProfiles);
+      }
+    };
+
+    fetchProfiles();
+  }, [chats, user, userProfiles]);
 
   const scrollToBottom = () => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
@@ -66,18 +126,18 @@ const Messages = () => {
         id: doc.id,
         ...doc.data()
       }));
-      // Sort by timestamp ascending
+      // Sort by timestamp ascending (support both 'timestamp' and legacy 'createdAt')
       msgs.sort((a, b) => {
-        const dateA = a.timestamp?.toMillis ? a.timestamp.toMillis() : 0;
-        const dateB = b.timestamp?.toMillis ? b.timestamp.toMillis() : 0;
+        const dateA = (a.timestamp || a.createdAt)?.toMillis ? (a.timestamp || a.createdAt).toMillis() : 0;
+        const dateB = (b.timestamp || b.createdAt)?.toMillis ? (b.timestamp || b.createdAt).toMillis() : 0;
         return dateA - dateB;
       });
       setMessages(msgs);
       scrollToBottom();
       
-      // Mark as read
+      // Mark as read — skip system messages (they are informational, not personal)
       msgs.forEach(msg => {
-        if (msg.receiverId === user.uid && !msg.read) {
+        if (msg.receiverId === user.uid && !msg.read && !msg.isSystemMessage) {
           updateDoc(doc(db, 'messages', msg.id), { read: true });
         }
       });
@@ -122,10 +182,24 @@ const Messages = () => {
   };
 
   const getOtherParticipantInfo = (chat) => {
-    // We store participant details in chat doc to avoid extra fetches
-    if (!chat.participantDetails) return { name: 'User', photo: null };
     const otherId = chat.participants.find(id => id !== user?.uid);
-    return chat.participantDetails[otherId] || { name: 'User', photo: null };
+    
+    // Priority 1: Use fresh fetched profile from cache
+    if (userProfiles[otherId]) {
+      return userProfiles[otherId];
+    }
+
+    // Priority 2: Use details stored in chat doc (preview)
+    if (chat.participantDetails && chat.participantDetails[otherId]) {
+      const details = chat.participantDetails[otherId];
+      return {
+        name: details.name || 'User',
+        photo: details.photo || null
+      };
+    }
+
+    // Priority 3: Absolute fallback
+    return { name: 'User', photo: null };
   };
 
   const formatTime = (timestamp) => {
@@ -186,14 +260,27 @@ const Messages = () => {
                   >
                     <div className="w-12 h-12 bg-[#DDE5D3] rounded-full flex-shrink-0 flex items-center justify-center overflow-hidden border border-[#A8C9A3]/30">
                       {otherUser.photo ? (
-                        <img src={otherUser.photo} alt={otherUser.name} className="w-full h-full object-cover" />
-                      ) : (
-                        <User size={20} className="text-[#4F6F52]" />
-                      )}
+                        <img 
+                          src={otherUser.photo} 
+                          alt={otherUser.name} 
+                          className="w-full h-full object-cover" 
+                          onError={(e) => {
+                            e.target.style.display = 'none';
+                            e.target.nextSibling.style.display = 'block';
+                          }}
+                        />
+                      ) : null}
+                      <User 
+                        size={20} 
+                        className="text-[#4F6F52]" 
+                        style={{ display: otherUser.photo ? 'none' : 'block' }} 
+                      />
                     </div>
                     <div className="flex-1 min-w-0">
                       <div className="flex justify-between items-baseline mb-1">
-                        <h4 className="font-semibold text-[#263326] truncate">{otherUser.name}</h4>
+                        <h4 className="font-semibold text-[#263326] truncate">
+                          {otherUser.username ? `@${otherUser.username.replace('@', '')}` : otherUser.name}
+                        </h4>
                         <span className="text-[10px] text-[#7A8C7A] whitespace-nowrap ml-2">
                           {formatTime(chat.updatedAt)}
                         </span>
@@ -232,13 +319,28 @@ const Messages = () => {
                 </button>
                 <div className="w-10 h-10 bg-[#DDE5D3] rounded-full flex items-center justify-center overflow-hidden border border-[#A8C9A3]/30">
                   {getOtherParticipantInfo(activeChat).photo ? (
-                    <img src={getOtherParticipantInfo(activeChat).photo} alt="Avatar" className="w-full h-full object-cover" />
-                  ) : (
-                    <User size={18} className="text-[#4F6F52]" />
-                  )}
+                    <img 
+                      src={getOtherParticipantInfo(activeChat).photo} 
+                      alt="Avatar" 
+                      className="w-full h-full object-cover" 
+                      onError={(e) => {
+                        e.target.style.display = 'none';
+                        e.target.nextSibling.style.display = 'block';
+                      }}
+                    />
+                  ) : null}
+                  <User 
+                    size={18} 
+                    className="text-[#4F6F52]" 
+                    style={{ display: getOtherParticipantInfo(activeChat).photo ? 'none' : 'block' }} 
+                  />
                 </div>
                 <div>
-                  <h3 className="font-bold text-[#263326]">{getOtherParticipantInfo(activeChat).name}</h3>
+                  <h3 className="font-bold text-[#263326]">
+                    {getOtherParticipantInfo(activeChat).username 
+                      ? `@${getOtherParticipantInfo(activeChat).username.replace('@', '')}` 
+                      : getOtherParticipantInfo(activeChat).name}
+                  </h3>
                   <p className="text-xs text-[#7A8C7A] font-medium flex items-center gap-1">
                     <span className="w-1.5 h-1.5 bg-green-500 rounded-full inline-block"></span> Exchanza Member
                   </p>
@@ -253,12 +355,30 @@ const Messages = () => {
                   </div>
                 ) : (
                   messages.map((msg, index) => {
+                    // System messages rendered as centered info chips
+                    if (msg.isSystemMessage) {
+                      return (
+                        <div key={msg.id} className="flex justify-center">
+                          <span className="text-[11px] text-[#4F6F52] bg-[#7BAE7F]/10 border border-[#7BAE7F]/20 px-4 py-1.5 rounded-full font-medium">
+                            {msg.text}
+                          </span>
+                        </div>
+                      );
+                    }
+
                     const isMine = msg.senderId === user.uid;
-                    const showTime = index === 0 || (msg.timestamp?.toMillis() - messages[index-1]?.timestamp?.toMillis() > 300000); // show time if > 5 mins apart
+                    // Support both 'timestamp' and legacy 'createdAt' fields
+                    const msgTime = msg.timestamp || msg.createdAt;
+                    const prevMsgTime = messages[index - 1]?.timestamp || messages[index - 1]?.createdAt;
+                    const showTime = index === 0 || (
+                      msgTime?.toMillis && prevMsgTime?.toMillis
+                        ? msgTime.toMillis() - prevMsgTime.toMillis() > 300000
+                        : false
+                    );
                     
                     return (
                       <div key={msg.id} className={`flex flex-col ${isMine ? 'items-end' : 'items-start'}`}>
-                        {showTime && <span className="text-[10px] text-[#7A8C7A] mb-2">{formatTime(msg.timestamp)}</span>}
+                        {showTime && <span className="text-[10px] text-[#7A8C7A] mb-2">{formatTime(msgTime)}</span>}
                         <div 
                           className={`max-w-[75%] px-4 py-2.5 rounded-2xl text-sm shadow-sm ${
                             isMine 
@@ -277,6 +397,7 @@ const Messages = () => {
                 )}
                 <div ref={messagesEndRef} />
               </div>
+
 
               {/* Input Area */}
               <div className="p-4 bg-white border-t border-[#E9E3D5]">

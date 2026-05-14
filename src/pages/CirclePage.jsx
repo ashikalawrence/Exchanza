@@ -4,12 +4,12 @@ import { useAuth } from '../context/AuthContext';
 import {
   doc, onSnapshot, updateDoc,
   arrayUnion, arrayRemove, addDoc, collection,
-  serverTimestamp
+  serverTimestamp, query, orderBy, where, getDocs
 } from 'firebase/firestore';
 import { db } from '../firebase/config';
 import {
   ArrowLeft, Users, BookOpen, TrendingUp, MessageSquare,
-  Send, Plus, Loader2, CheckCircle2, Heart, Clock, Crown, Sparkles
+  Send, Plus, Loader2, CheckCircle2, Heart, Clock, Crown, Sparkles, Lock, X
 } from 'lucide-react';
 
 const timeAgo = (ts) => {
@@ -26,6 +26,24 @@ const Avatar = ({ name, color, size = 8 }) => (
   <div className={`w-${size} h-${size} rounded-full flex items-center justify-center text-white font-bold text-sm flex-shrink-0`}
     style={{ backgroundColor: color || '#7BAE7F' }}>
     {(name || 'U').charAt(0).toUpperCase()}
+  </div>
+);
+
+const LockedContent = ({ onJoin }) => (
+  <div className="bg-white border-2 border-dashed border-[#E9E3D5] rounded-[2rem] p-16 text-center animate-in fade-in duration-500">
+    <div className="w-20 h-20 bg-[#F7F5EF] rounded-3xl flex items-center justify-center mx-auto mb-6">
+      <Lock size={32} className="text-[#7BAE7F]" />
+    </div>
+    <h3 className="text-2xl font-bold text-[#263326] mb-3">Member Exclusive Content</h3>
+    <p className="text-[#7A8C7A] font-light mb-8 max-w-sm mx-auto leading-relaxed">
+      Join this circle to access discussions, books, and group chat. Be part of the conversation!
+    </p>
+    <button 
+      onClick={onJoin}
+      className="px-10 py-4 bg-[#7BAE7F] hover:bg-[#4F6F52] text-white font-bold rounded-2xl shadow-lg shadow-[#7BAE7F]/20 transition-all active:scale-95 flex items-center gap-2 mx-auto"
+    >
+      <Plus size={20} /> Join This Circle
+    </button>
   </div>
 );
 
@@ -48,11 +66,26 @@ const CirclePage = () => {
   const [newPost, setNewPost] = useState('');
   const [posting, setPosting] = useState(false);
 
-  // Chat is local per-session (UI only, not persisted)
+  // Chat — Firestore realtime
   const [chatMessages, setChatMessages] = useState([]);
   const [chatInput, setChatInput] = useState('');
+  const [chatSending, setChatSending] = useState(false);
+  const [chatLoading, setChatLoading] = useState(false);
+
+  // Circle Books — Firestore realtime
+  const [circleBooks, setCircleBooks] = useState([]);
+  const [booksLoading, setBooksLoading] = useState(false);
+  const [showAddBook, setShowAddBook] = useState(false);
+  const [bookForm, setBookForm] = useState({ title: '', author: '', description: '', genre: '' });
+  const [addingBook, setAddingBook] = useState(false);
+
+  // Members state
+  const [members, setMembers] = useState([]);
+  const [membersLoading, setMembersLoading] = useState(false);
 
   const showToast = (msg) => { setToast(msg); setTimeout(() => setToast(null), 3000); };
+  
+  const isJoined = circle && user && (circle.joinedUsers || []).includes(user.uid);
 
   // Real-time circle doc
   useEffect(() => {
@@ -75,9 +108,12 @@ const CirclePage = () => {
     return () => unsub();
   }, [circleId]);
 
-  // Real-time discussions - no orderBy needed (sort client-side, avoids composite index)
+  // Real-time discussions - only fetch if joined
   useEffect(() => {
-    if (!circleId) return;
+    if (!circleId || !isJoined) {
+      setPosts([]);
+      return;
+    }
     const unsub = onSnapshot(
       collection(db, 'bookCircles', circleId, 'discussions'),
       (snap) => {
@@ -89,12 +125,89 @@ const CirclePage = () => {
       (err) => console.error('[CirclePage] Discussions error:', err)
     );
     return () => unsub();
-  }, [circleId]);
+  }, [circleId, isJoined]);
 
-  // Scroll chat to bottom
+  // Real-time group chat - only fetch if joined
+  useEffect(() => {
+    if (!circleId || !isJoined) {
+      setChatMessages([]);
+      return;
+    }
+    setChatLoading(true);
+    const q = query(
+      collection(db, 'circleChats', circleId, 'messages'),
+      orderBy('createdAt', 'asc')
+    );
+    const unsub = onSnapshot(q, (snap) => {
+      const msgs = snap.docs.map(d => ({ id: d.id, ...d.data() }));
+      setChatMessages(msgs);
+      setChatLoading(false);
+    }, (err) => {
+      console.error('[CirclePage] Chat error:', err);
+      setChatLoading(false);
+    });
+    return () => unsub();
+  }, [circleId, isJoined]);
+
+  // Real-time circle books — only fetch if joined
+  useEffect(() => {
+    if (!circleId || !isJoined) {
+      setCircleBooks([]);
+      return;
+    }
+    setBooksLoading(true);
+    const q = query(
+      collection(db, 'circleBooks', circleId, 'books'),
+      orderBy('createdAt', 'desc')
+    );
+    const unsub = onSnapshot(q, (snap) => {
+      setCircleBooks(snap.docs.map(d => ({ id: d.id, ...d.data() })));
+      setBooksLoading(false);
+    }, (err) => {
+      console.error('[CirclePage] Books error:', err);
+      setBooksLoading(false);
+    });
+    return () => unsub();
+  }, [circleId, isJoined]);
+
+  // Fetch members' profiles
+  useEffect(() => {
+    const fetchMembers = async () => {
+      if (!circle?.joinedUsers || circle.joinedUsers.length === 0) {
+        setMembers([]);
+        return;
+      }
+      
+      setMembersLoading(true);
+      try {
+        // Firestore whereIn is limited to 30 IDs. For more, we'd need to chunk.
+        const uids = circle.joinedUsers.slice(0, 30); 
+        const q = query(collection(db, 'users'), where('uid', 'in', uids));
+        const snap = await getDocs(q);
+        const userProfiles = snap.docs.map(d => d.data());
+        
+        // Sort to put creator first, then by name
+        userProfiles.sort((a, b) => {
+          if (a.uid === circle.creatorId) return -1;
+          if (b.uid === circle.creatorId) return 1;
+          return (a.displayName || '').localeCompare(b.displayName || '');
+        });
+        
+        setMembers(userProfiles);
+      } catch (err) {
+        console.error('[CirclePage] Members fetch error:', err);
+      } finally {
+        setMembersLoading(false);
+      }
+    };
+
+    fetchMembers();
+  }, [circle?.joinedUsers, circle?.creatorId]);
+
+  // Scroll chat to bottom on new messages
   useEffect(() => { chatEndRef.current?.scrollIntoView({ behavior: 'smooth' }); }, [chatMessages]);
 
-  const isJoined = circle && user && (circle.joinedUsers || []).includes(user.uid);
+
 
   const handleJoin = async () => {
     if (!user) { showToast('Please log in to join.'); return; }
@@ -136,17 +249,52 @@ const CirclePage = () => {
     });
   };
 
-  const handleChatSend = () => {
-    if (!chatInput.trim() || !user) return;
-    setChatMessages(prev => [...prev, {
-      id: Date.now(),
-      name: user.displayName || 'You',
-      text: chatInput.trim(),
-      color: '#7BAE7F',
-      time: 'just now',
-      isMe: true,
-    }]);
+  const handleAddBook = async () => {
+    if (!bookForm.title.trim() || !user || addingBook) return;
+    setAddingBook(true);
+    try {
+      await addDoc(collection(db, 'circleBooks', circleId, 'books'), {
+        title: bookForm.title.trim(),
+        author: bookForm.author.trim() || 'Unknown Author',
+        description: bookForm.description.trim(),
+        genre: bookForm.genre.trim() || circle.category || 'General',
+        sharedById: user.uid,
+        sharedByName: user.displayName || 'Anonymous',
+        sharedByPhoto: user.photoURL || null,
+        circleId,
+        createdAt: serverTimestamp(),
+      });
+      setBookForm({ title: '', author: '', description: '', genre: '' });
+      setShowAddBook(false);
+      showToast('Book shared with the circle! 📚');
+    } catch (e) {
+      console.error('[CirclePage] Add book error:', e);
+      showToast('Failed to share book. Try again.');
+    } finally {
+      setAddingBook(false);
+    }
+  };
+
+  const handleChatSend = async () => {
+    if (!chatInput.trim() || !user || chatSending) return;
+    const text = chatInput.trim();
     setChatInput('');
+    setChatSending(true);
+    try {
+      await addDoc(collection(db, 'circleChats', circleId, 'messages'), {
+        senderId: user.uid,
+        senderName: user.displayName || 'Anonymous',
+        senderProfileImage: user.photoURL || null,
+        text,
+        createdAt: serverTimestamp(),
+      });
+    } catch (e) {
+      console.error('[CirclePage] Chat send error:', e);
+      showToast('Failed to send message. Try again.');
+      setChatInput(text); // restore input on failure
+    } finally {
+      setChatSending(false);
+    }
   };
 
   if (loading) return (
@@ -171,9 +319,10 @@ const CirclePage = () => {
   );
 
   const tabs = [
-    { id: 'discussions', label: 'Discussions', icon: <MessageSquare size={14} /> },
-    { id: 'books', label: 'Books', icon: <BookOpen size={14} /> },
-    { id: 'chat', label: 'Group Chat', icon: <Send size={14} /> },
+    { id: 'discussions', label: 'Discussions', icon: !isJoined ? <Lock size={12} className="text-[#A8C9A3]" /> : <MessageSquare size={14} /> },
+    { id: 'books', label: 'Books', icon: !isJoined ? <Lock size={12} className="text-[#A8C9A3]" /> : <BookOpen size={14} /> },
+    { id: 'chat', label: 'Group Chat', icon: !isJoined ? <Lock size={12} className="text-[#A8C9A3]" /> : <Send size={14} /> },
+    { id: 'members', label: 'Members', icon: <Users size={14} /> },
   ];
 
   return (
@@ -223,154 +372,321 @@ const CirclePage = () => {
         ))}
       </div>
 
-      {/* DISCUSSIONS TAB */}
-      {activeTab === 'discussions' && (
-        <div className="space-y-5 animate-in fade-in duration-300">
-          {/* Post box */}
-          {user ? (
-            <div className="bg-white rounded-2xl p-5 border border-[#E9E3D5] shadow-sm">
-              <div className="flex gap-3">
-                <Avatar name={user.displayName} color="#7BAE7F" />
-                <div className="flex-1">
-                  <textarea
-                    value={newPost}
-                    onChange={e => setNewPost(e.target.value)}
-                    onKeyDown={e => e.key === 'Enter' && !e.shiftKey && (e.preventDefault(), handlePost())}
-                    placeholder="Share a thought, ask a question, or recommend a book..."
-                    className="w-full px-4 py-3 bg-[#F7F5EF] border border-[#E9E3D5] rounded-xl text-sm text-[#263326] focus:outline-none focus:ring-2 focus:ring-[#7BAE7F] resize-none h-20 transition-all"
-                  />
-                  <div className="flex justify-end mt-2">
-                    <button onClick={handlePost} disabled={!newPost.trim() || posting}
-                      className="flex items-center gap-2 px-5 py-2 bg-[#7BAE7F] hover:bg-[#4F6F52] text-white text-sm font-bold rounded-xl transition-all disabled:opacity-50 active:scale-95">
-                      {posting ? <Loader2 size={14} className="animate-spin" /> : <Send size={14} />} Post
-                    </button>
+      {/* CONTENT AREA */}
+      {!isJoined ? (
+        <LockedContent onJoin={handleJoin} />
+      ) : (
+        <>
+          {/* DISCUSSIONS TAB */}
+          {activeTab === 'discussions' && (
+            <div className="space-y-5 animate-in fade-in duration-300">
+              {/* Post box */}
+              {user ? (
+                <div className="bg-white rounded-2xl p-5 border border-[#E9E3D5] shadow-sm">
+                  <div className="flex gap-3">
+                    <Avatar name={user.displayName} color="#7BAE7F" />
+                    <div className="flex-1">
+                      <textarea
+                        value={newPost}
+                        onChange={e => setNewPost(e.target.value)}
+                        onKeyDown={e => e.key === 'Enter' && !e.shiftKey && (e.preventDefault(), handlePost())}
+                        placeholder="Share a thought, ask a question, or recommend a book..."
+                        className="w-full px-4 py-3 bg-[#F7F5EF] border border-[#E9E3D5] rounded-xl text-sm text-[#263326] focus:outline-none focus:ring-2 focus:ring-[#7BAE7F] resize-none h-20 transition-all"
+                      />
+                      <div className="flex justify-end mt-2">
+                        <button onClick={handlePost} disabled={!newPost.trim() || posting}
+                          className="flex items-center gap-2 px-5 py-2 bg-[#7BAE7F] hover:bg-[#4F6F52] text-white text-sm font-bold rounded-xl transition-all disabled:opacity-50 active:scale-95">
+                          {posting ? <Loader2 size={14} className="animate-spin" /> : <Send size={14} />} Post
+                        </button>
+                      </div>
+                    </div>
                   </div>
                 </div>
-              </div>
-            </div>
-          ) : (
-            <div className="bg-[#F7F5EF] border border-[#E9E3D5] rounded-2xl p-5 text-center">
-              <p className="text-sm text-[#7A8C7A]">Please <button onClick={() => navigate('/login')} className="text-[#7BAE7F] font-bold underline">log in</button> to participate in discussions.</p>
+              ) : (
+                <div className="bg-[#F7F5EF] border border-[#E9E3D5] rounded-2xl p-5 text-center">
+                  <p className="text-sm text-[#7A8C7A]">Please <button onClick={() => navigate('/login')} className="text-[#7BAE7F] font-bold underline">log in</button> to participate in discussions.</p>
+                </div>
+              )}
+
+              {/* Posts */}
+              {posts.length === 0 ? (
+                <div className="text-center py-16 text-[#7A8C7A]">
+                  <MessageSquare size={40} className="mx-auto mb-3 opacity-30" />
+                  <p className="font-light">No discussions yet. Be the first to post!</p>
+                </div>
+              ) : posts.map(post => (
+                <div key={post.id} className="bg-white rounded-2xl p-5 border border-[#E9E3D5] shadow-sm hover:shadow-md transition-all">
+                  <div className="flex items-start gap-3">
+                    <Avatar name={post.authorName} color={post.authorColor || '#7BAE7F'} />
+                    <div className="flex-1 min-w-0">
+                      <div className="flex items-center justify-between gap-2 mb-1">
+                        <div className="flex items-center gap-2">
+                          <p className="font-bold text-sm text-[#263326]">{post.authorName}</p>
+                          {post.authorId === circle.creatorId && (
+                            <span className="px-1.5 py-0.5 bg-[#7BAE7F]/15 text-[#4F6F52] text-[9px] font-bold rounded border border-[#7BAE7F]/20 flex items-center gap-0.5"><Crown size={8} /> Creator</span>
+                          )}
+                        </div>
+                        <span className="text-[11px] text-[#A8C9A3] flex items-center gap-1"><Clock size={10} /> {timeAgo(post.createdAt)}</span>
+                      </div>
+                      <p className="text-sm text-[#4F6F52] leading-relaxed">{post.text}</p>
+                      <button onClick={() => handleLike(post)}
+                        className={`mt-3 flex items-center gap-1.5 text-xs font-semibold transition-colors ${(post.likedBy || []).includes(user?.uid) ? 'text-[#7BAE7F]' : 'text-[#7A8C7A] hover:text-[#7BAE7F]'}`}>
+                        <Heart size={13} fill={(post.likedBy || []).includes(user?.uid) ? '#7BAE7F' : 'none'} />
+                        {post.likes || 0}
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              ))}
             </div>
           )}
 
-          {/* Posts */}
-          {posts.length === 0 ? (
-            <div className="text-center py-16 text-[#7A8C7A]">
-              <MessageSquare size={40} className="mx-auto mb-3 opacity-30" />
-              <p className="font-light">No discussions yet. Be the first to post!</p>
+          {/* BOOKS TAB */}
+          {activeTab === 'books' && (
+            <div className="animate-in fade-in duration-300 space-y-5">
+              {/* Header row */}
+              <div className="flex items-center justify-between">
+                <h3 className="font-bold text-[#263326] flex items-center gap-2">
+                  <BookOpen size={16} className="text-[#7BAE7F]" /> Books Shared in This Circle
+                </h3>
+                <button
+                  onClick={() => setShowAddBook(true)}
+                  className="flex items-center gap-2 px-4 py-2 bg-[#7BAE7F] hover:bg-[#4F6F52] text-white text-sm font-bold rounded-xl transition-all active:scale-95 shadow-sm"
+                >
+                  <Plus size={14} /> Add Book
+                </button>
+              </div>
+
+              {/* Book list */}
+              {booksLoading ? (
+                <div className="flex justify-center py-16">
+                  <Loader2 size={28} className="animate-spin text-[#7BAE7F]" />
+                </div>
+              ) : circleBooks.length === 0 ? (
+                <div className="text-center py-16 bg-white rounded-2xl border border-[#E9E3D5]">
+                  <BookOpen size={40} className="mx-auto mb-3 opacity-20 text-[#7BAE7F]" />
+                  <p className="font-semibold text-[#263326]">No books shared yet</p>
+                  <p className="text-xs text-[#7A8C7A] font-light mt-1">Be the first to share a book with this circle!</p>
+                </div>
+              ) : (
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                  {circleBooks.map(book => (
+                    <div key={book.id} className="bg-white rounded-2xl p-4 border border-[#E9E3D5] shadow-sm hover:shadow-md hover:-translate-y-0.5 transition-all flex gap-4">
+                      <div className="w-12 h-16 rounded-xl flex items-center justify-center text-white font-bold text-lg shadow-md flex-shrink-0" style={{ background: 'linear-gradient(135deg, #7BAE7Fcc, #4F6F52)' }}>
+                        {(book.title || 'B').charAt(0).toUpperCase()}
+                      </div>
+                      <div className="flex-1 min-w-0">
+                        <p className="font-bold text-sm text-[#263326] leading-tight truncate">{book.title}</p>
+                        <p className="text-xs text-[#7A8C7A] mt-0.5 truncate">by {book.author}</p>
+                        {book.description && (
+                          <p className="text-xs text-[#4F6F52] mt-1.5 line-clamp-2 leading-relaxed">{book.description}</p>
+                        )}
+                        <div className="flex items-center gap-2 mt-2">
+                          <span className="px-2 py-0.5 bg-[#7BAE7F]/10 text-[#4F6F52] border border-[#7BAE7F]/20 text-[10px] font-bold rounded-lg">{book.genre}</span>
+                          <span className="text-[10px] text-[#A8C9A3] flex items-center gap-1 ml-auto">
+                            <Clock size={9} /> {timeAgo(book.createdAt)}
+                          </span>
+                        </div>
+                        <p className="text-[10px] text-[#7A8C7A] mt-1">shared by <span className="font-semibold">{book.sharedByName}</span></p>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
             </div>
-          ) : posts.map(post => (
-            <div key={post.id} className="bg-white rounded-2xl p-5 border border-[#E9E3D5] shadow-sm hover:shadow-md transition-all">
-              <div className="flex items-start gap-3">
-                <Avatar name={post.authorName} color={post.authorColor || '#7BAE7F'} />
-                <div className="flex-1 min-w-0">
-                  <div className="flex items-center justify-between gap-2 mb-1">
-                    <div className="flex items-center gap-2">
-                      <p className="font-bold text-sm text-[#263326]">{post.authorName}</p>
-                      {post.authorId === circle.creatorId && (
-                        <span className="px-1.5 py-0.5 bg-[#7BAE7F]/15 text-[#4F6F52] text-[9px] font-bold rounded border border-[#7BAE7F]/20 flex items-center gap-0.5"><Crown size={8} /> Creator</span>
+          )}
+
+          {/* CHAT TAB */}
+          {activeTab === 'chat' && (
+            <div className="animate-in fade-in duration-300">
+              <div className="bg-white rounded-2xl border border-[#E9E3D5] shadow-sm overflow-hidden flex flex-col h-[500px]">
+                {/* Chat header */}
+                <div className="px-5 py-3 border-b border-[#E9E3D5] bg-[#F7F5EF]/60 flex items-center gap-3">
+                  <div className="w-2 h-2 bg-[#7BAE7F] rounded-full animate-pulse" />
+                  <p className="font-bold text-sm text-[#263326]">{circle.name} — Group Chat</p>
+                  <span className="ml-auto text-xs text-[#7A8C7A]">{circle.membersCount || 0} members</span>
+                </div>
+
+                {/* Messages */}
+                <div className="flex-1 overflow-y-auto p-4 space-y-3">
+                  {chatLoading ? (
+                    <div className="flex justify-center items-center h-full">
+                      <Loader2 size={24} className="animate-spin text-[#7BAE7F]" />
+                    </div>
+                  ) : chatMessages.length === 0 ? (
+                    <div className="flex flex-col items-center justify-center h-full text-[#7A8C7A]">
+                      <MessageSquare size={32} className="opacity-20 mb-2" />
+                      <p className="text-sm font-light">No messages yet. Say hi!</p>
+                    </div>
+                  ) : chatMessages.map(msg => {
+                    const isMe = msg.senderId === user?.uid;
+                    return (
+                      <div key={msg.id} className={`flex items-end gap-2.5 ${isMe ? 'flex-row-reverse' : ''}`}>
+                        {/* Avatar */}
+                        {msg.senderProfileImage ? (
+                          <img
+                            src={msg.senderProfileImage}
+                            alt={msg.senderName}
+                            className="w-7 h-7 rounded-full object-cover flex-shrink-0 border border-[#E9E3D5]"
+                            onError={e => { e.target.style.display = 'none'; e.target.nextSibling.style.display = 'flex'; }}
+                          />
+                        ) : null}
+                        <div
+                          className={`w-7 h-7 rounded-full flex items-center justify-center text-white font-bold text-xs flex-shrink-0 ${msg.senderProfileImage ? 'hidden' : 'flex'}`}
+                          style={{ backgroundColor: '#7BAE7F' }}
+                        >
+                          {(msg.senderName || 'U').charAt(0).toUpperCase()}
+                        </div>
+                        {/* Bubble */}
+                        <div className={`max-w-[70%] flex flex-col ${isMe ? 'items-end' : 'items-start'}`}>
+                          {!isMe && (
+                            <p className="text-[10px] font-bold text-[#7A8C7A] mb-0.5 ml-1">{msg.senderName}</p>
+                          )}
+                          <div className={`px-4 py-2 rounded-2xl text-sm leading-relaxed break-words ${
+                            isMe
+                              ? 'bg-[#7BAE7F] text-white rounded-tr-sm'
+                              : 'bg-[#F7F5EF] text-[#263326] border border-[#E9E3D5] rounded-tl-sm'
+                          }`}>
+                            {msg.text}
+                          </div>
+                          <p className="text-[9px] text-[#A8C9A3] mt-1 mx-1">{timeAgo(msg.createdAt)}</p>
+                        </div>
+                      </div>
+                    );
+                  })}
+                  <div ref={chatEndRef} />
+                </div>
+
+                {/* Input */}
+                <div className="px-4 py-3 border-t border-[#E9E3D5] bg-[#F7F5EF]/40 flex gap-2">
+                  {user ? (
+                    <>
+                      <input
+                        value={chatInput}
+                        onChange={e => setChatInput(e.target.value)}
+                        onKeyDown={e => e.key === 'Enter' && !e.shiftKey && handleChatSend()}
+                        placeholder="Type a message..."
+                        disabled={chatSending}
+                        className="flex-1 px-4 py-2.5 bg-white border border-[#E9E3D5] rounded-xl text-sm text-[#263326] focus:outline-none focus:ring-2 focus:ring-[#7BAE7F] transition-all disabled:opacity-60" />
+                      <button
+                        onClick={handleChatSend}
+                        disabled={!chatInput.trim() || chatSending}
+                        className="px-4 py-2.5 bg-[#7BAE7F] hover:bg-[#4F6F52] text-white rounded-xl transition-all disabled:opacity-50 active:scale-95">
+                        {chatSending ? <Loader2 size={16} className="animate-spin" /> : <Send size={16} />}
+                      </button>
+                    </>
+                  ) : (
+                    <p className="text-sm text-[#7A8C7A] py-2">Please <button onClick={() => navigate('/login')} className="text-[#7BAE7F] font-bold underline">log in</button> to chat.</p>
+                  )}
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* MEMBERS TAB */}
+          {activeTab === 'members' && (
+            <div className="animate-in fade-in duration-300 space-y-4">
+              <div className="flex items-center justify-between mb-2">
+                <h3 className="font-bold text-[#263326] flex items-center gap-2">
+                  <Users size={16} className="text-[#7BAE7F]" /> Community Members
+                </h3>
+                <span className="text-xs text-[#7A8C7A] bg-[#F7F5EF] px-3 py-1 rounded-full border border-[#E9E3D5]">
+                  {circle.membersCount || 0} Total
+                </span>
+              </div>
+
+              {membersLoading ? (
+                <div className="flex justify-center py-12">
+                  <Loader2 size={28} className="animate-spin text-[#7BAE7F]" />
+                </div>
+              ) : (
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                  {members.map(member => (
+                    <div key={member.uid} className="bg-white rounded-2xl p-4 border border-[#E9E3D5] shadow-sm flex items-center gap-4 hover:shadow-md transition-all">
+                      {member.photoURL ? (
+                        <img 
+                          src={member.photoURL} 
+                          alt={member.displayName} 
+                          className="w-12 h-12 rounded-full object-cover border-2 border-[#F7F5EF]"
+                        />
+                      ) : (
+                        <Avatar name={member.displayName} color="#7BAE7F" size={12} />
+                      )}
+                      
+                      <div className="flex-1 min-w-0">
+                        <div className="flex items-center gap-2">
+                          <p className="font-bold text-sm text-[#263326] truncate">{member.displayName}</p>
+                          {member.uid === circle.creatorId && (
+                            <span className="px-1.5 py-0.5 bg-[#7BAE7F]/15 text-[#4F6F52] text-[9px] font-bold rounded border border-[#7BAE7F]/20 flex items-center gap-0.5">
+                              <Crown size={8} /> Creator
+                            </span>
+                          )}
+                        </div>
+                        <p className="text-[11px] text-[#7A8C7A] font-light">
+                          Joined {member.createdAt ? new Date(member.createdAt).toLocaleDateString('en-US', { month: 'short', year: 'numeric' }) : 'recently'}
+                        </p>
+                      </div>
+                      
+                      {member.uid === user?.uid && (
+                        <span className="text-[10px] font-bold text-[#7BAE7F] bg-[#7BAE7F]/10 px-2 py-0.5 rounded-full">You</span>
                       )}
                     </div>
-                    <span className="text-[11px] text-[#A8C9A3] flex items-center gap-1"><Clock size={10} /> {timeAgo(post.createdAt)}</span>
-                  </div>
-                  <p className="text-sm text-[#4F6F52] leading-relaxed">{post.text}</p>
-                  <button onClick={() => handleLike(post)}
-                    className={`mt-3 flex items-center gap-1.5 text-xs font-semibold transition-colors ${(post.likedBy || []).includes(user?.uid) ? 'text-[#7BAE7F]' : 'text-[#7A8C7A] hover:text-[#7BAE7F]'}`}>
-                    <Heart size={13} fill={(post.likedBy || []).includes(user?.uid) ? '#7BAE7F' : 'none'} />
-                    {post.likes || 0}
-                  </button>
+                  ))}
                 </div>
-              </div>
-            </div>
-          ))}
-        </div>
-      )}
-
-      {/* BOOKS TAB */}
-      {activeTab === 'books' && (
-        <div className="animate-in fade-in duration-300 space-y-6">
-          {circle.trending && circle.trending !== '—' && (
-            <div className="flex items-center gap-3 p-5 bg-gradient-to-r from-[#263326] to-[#4F6F52] rounded-2xl text-white shadow-md">
-              <TrendingUp size={20} className="text-[#A8C9A3]" />
-              <div>
-                <p className="text-xs text-[#A8C9A3] font-light">Currently Trending in This Circle</p>
-                <p className="font-bold">{circle.trending}</p>
-              </div>
-              <span className="ml-auto px-3 py-1 bg-[#7BAE7F]/30 text-[#A8C9A3] text-xs font-bold rounded-full border border-[#7BAE7F]/20 flex items-center gap-1"><Sparkles size={10} /> Hot</span>
-            </div>
-          )}
-        <h3 className="font-bold text-[#263326]">Popular in This Circle</h3>
-          {(circle.popularBooks || []).length === 0 ? (
-            <div className="text-center py-12 text-[#7A8C7A] bg-white rounded-2xl border border-[#E9E3D5]">
-              <BookOpen size={36} className="mx-auto mb-3 opacity-30" />
-              <p className="font-light text-sm">No books added to this circle yet.</p>
-              <p className="text-xs font-light mt-1">Members can recommend books in the Discussions tab.</p>
-            </div>
-          ) : (
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-              {(circle.popularBooks || []).slice(0, 4).map((title, i) => (
-                <div key={i} className="bg-white rounded-2xl p-4 border border-[#E9E3D5] shadow-sm hover:shadow-md hover:-translate-y-0.5 transition-all flex items-center gap-4">
-                  <div className="w-12 h-16 rounded-xl flex items-center justify-center text-white font-bold text-lg shadow-md flex-shrink-0" style={{ background: 'linear-gradient(135deg, #7BAE7Fcc, #4F6F52)' }}>
-                    {title.charAt(0)}
-                  </div>
-                  <div>
-                    <p className="font-bold text-sm text-[#263326] leading-tight">{title}</p>
-                    <span className="inline-block mt-2 px-2 py-0.5 bg-[#7BAE7F]/10 text-[#4F6F52] border border-[#7BAE7F]/20 text-[10px] font-bold rounded-lg">{circle.category}</span>
-                  </div>
-                </div>
-              ))}
-            </div>
-          )}
-        </div>
-      )}
-
-      {/* CHAT TAB */}
-      {activeTab === 'chat' && (
-        <div className="animate-in fade-in duration-300">
-          <div className="bg-white rounded-2xl border border-[#E9E3D5] shadow-sm overflow-hidden flex flex-col h-[500px]">
-            {/* Chat header */}
-            <div className="px-5 py-3 border-b border-[#E9E3D5] bg-[#F7F5EF]/60 flex items-center gap-3">
-              <div className="w-2 h-2 bg-[#7BAE7F] rounded-full animate-pulse" />
-              <p className="font-bold text-sm text-[#263326]">{circle.name} — Group Chat</p>
-              <span className="ml-auto text-xs text-[#7A8C7A]">{circle.membersCount || 0} members</span>
-            </div>
-
-            {/* Messages */}
-            <div className="flex-1 overflow-y-auto p-4 space-y-3">
-              {chatMessages.map(msg => (
-                <div key={msg.id} className={`flex items-start gap-2.5 ${msg.isMe ? 'flex-row-reverse' : ''}`}>
-                  <div className={`w-7 h-7 rounded-full flex items-center justify-center text-white font-bold text-xs flex-shrink-0`} style={{ backgroundColor: msg.color }}>
-                    {msg.name.charAt(0)}
-                  </div>
-                  <div className={`max-w-[70%] ${msg.isMe ? 'items-end' : 'items-start'} flex flex-col`}>
-                    {!msg.isMe && <p className="text-[10px] font-bold text-[#7A8C7A] mb-0.5 ml-1">{msg.name}</p>}
-                    <div className={`px-4 py-2 rounded-2xl text-sm leading-relaxed ${msg.isMe ? 'bg-[#7BAE7F] text-white rounded-tr-sm' : 'bg-[#F7F5EF] text-[#263326] border border-[#E9E3D5] rounded-tl-sm'}`}>
-                      {msg.text}
-                    </div>
-                    <p className="text-[9px] text-[#A8C9A3] mt-1 mx-1">{msg.time}</p>
-                  </div>
-                </div>
-              ))}
-              <div ref={chatEndRef} />
-            </div>
-
-            {/* Input */}
-            <div className="px-4 py-3 border-t border-[#E9E3D5] bg-[#F7F5EF]/40 flex gap-2">
-              {user ? (
-                <>
-                  <input value={chatInput} onChange={e => setChatInput(e.target.value)}
-                    onKeyDown={e => e.key === 'Enter' && handleChatSend()}
-                    placeholder="Type a message..."
-                    className="flex-1 px-4 py-2.5 bg-white border border-[#E9E3D5] rounded-xl text-sm text-[#263326] focus:outline-none focus:ring-2 focus:ring-[#7BAE7F] transition-all" />
-                  <button onClick={handleChatSend} disabled={!chatInput.trim()}
-                    className="px-4 py-2.5 bg-[#7BAE7F] hover:bg-[#4F6F52] text-white rounded-xl transition-all disabled:opacity-50 active:scale-95">
-                    <Send size={16} />
-                  </button>
-                </>
-              ) : (
-                <p className="text-sm text-[#7A8C7A] py-2">Please <button onClick={() => navigate('/login')} className="text-[#7BAE7F] font-bold underline">log in</button> to chat.</p>
               )}
+            </div>
+          )}
+        </>
+      )}
+
+      {/* Add Book Modal */}
+      {showAddBook && (
+        <div className="fixed inset-0 z-[100] flex items-center justify-center p-4 bg-[#263326]/70 backdrop-blur-sm animate-in fade-in duration-300">
+          <div className="bg-white rounded-[2rem] shadow-2xl w-full max-w-md animate-in zoom-in-95 duration-300 overflow-hidden">
+            <div className="px-6 pt-6 pb-4 border-b border-[#E9E3D5] flex items-center justify-between">
+              <div>
+                <h2 className="font-bold text-[#263326] text-lg flex items-center gap-2"><BookOpen size={18} className="text-[#7BAE7F]" /> Share a Book</h2>
+                <p className="text-xs text-[#7A8C7A] font-light mt-0.5">Recommend a book to this circle</p>
+              </div>
+              <button onClick={() => { setShowAddBook(false); setBookForm({ title: '', author: '', description: '', genre: '' }); }} className="p-2 text-[#7A8C7A] hover:text-[#263326] hover:bg-[#F7F5EF] rounded-full transition-colors">
+                <X size={20} />
+              </button>
+            </div>
+            <div className="p-6 space-y-4">
+              {[{ label: 'Book Title *', key: 'title', placeholder: 'e.g. Atomic Habits' },
+                { label: 'Author', key: 'author', placeholder: 'e.g. James Clear' },
+                { label: 'Genre', key: 'genre', placeholder: 'e.g. Self-Help' }].map(({ label, key, placeholder }) => (
+                <div key={key}>
+                  <label className="block text-sm font-bold text-[#4F6F52] mb-1.5">{label}</label>
+                  <input
+                    type="text"
+                    value={bookForm[key]}
+                    onChange={e => setBookForm(f => ({ ...f, [key]: e.target.value }))}
+                    placeholder={placeholder}
+                    maxLength={100}
+                    className="w-full px-4 py-3 bg-[#F7F5EF] border border-[#E9E3D5] rounded-xl text-sm text-[#263326] focus:outline-none focus:ring-2 focus:ring-[#7BAE7F] transition-all"
+                  />
+                </div>
+              ))}
+              <div>
+                <label className="block text-sm font-bold text-[#4F6F52] mb-1.5">Why do you recommend it?</label>
+                <textarea
+                  rows={3}
+                  value={bookForm.description}
+                  onChange={e => setBookForm(f => ({ ...f, description: e.target.value }))}
+                  placeholder="A short reason or review..."
+                  maxLength={300}
+                  className="w-full px-4 py-3 bg-[#F7F5EF] border border-[#E9E3D5] rounded-xl text-sm text-[#263326] focus:outline-none focus:ring-2 focus:ring-[#7BAE7F] resize-none transition-all"
+                />
+              </div>
+              <button
+                onClick={handleAddBook}
+                disabled={!bookForm.title.trim() || addingBook}
+                className="w-full py-3.5 bg-[#7BAE7F] hover:bg-[#4F6F52] text-white font-bold rounded-2xl transition-all active:scale-95 disabled:opacity-50 disabled:cursor-not-allowed shadow-md flex items-center justify-center gap-2"
+              >
+                {addingBook ? <Loader2 size={18} className="animate-spin" /> : <Plus size={18} />}
+                {addingBook ? 'Sharing...' : 'Share with Circle'}
+              </button>
             </div>
           </div>
         </div>
